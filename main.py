@@ -46,15 +46,16 @@ if "generated" not in st.session_state:
 if "past" not in st.session_state:
     st.session_state["past"] = []
 
+placeholder = "Let's start! Write your question here!";
 
 def get_text():
-    input_text = st.text_input("You: ", "Hello, how are you?", key="input")
+    input_text = st.text_input("You: ", placeholder, key="input")
     return input_text
 
 
 user_input = get_text()
 
-if user_input:
+if placeholder not in user_input:
     output = model.run_chain(user_input,topics)
 
     st.session_state.past.append(user_input)

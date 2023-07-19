@@ -7,6 +7,7 @@ from langchain.document_loaders import DirectoryLoader
 from langchain import PromptTemplate,FewShotPromptTemplate
 import os
 from langchain.prompts.example_selector import SemanticSimilarityExampleSelector
+from langchain.memory import ConversationBufferWindowMemory
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -84,47 +85,65 @@ If you don't know which topics it belongs you should output 'OutOfScope'. You wi
 )
 
 
-template_inh = """ You are playing the role of an expert legal assistant in the Italian Laws regulating Inheritance. You will be given the most relevant
-documents related to a question and you to provide a meaningful answer.
-Do not try to force an answer , just say you don't know if you are not sure.
+template_inh = """ You are playing the role of an expert legal assistant in the Italian Laws regulating Inheritance.
+You will be given the most relevant documents related to a question and you have to examine these documents content and try to summarize an answer based on those.
+Do not try to force an answer , just say the question is too complicated for you to give an answer.
 
-Here you find messages of the conversation:
-History : {chat_history}
+You will be provided with previous messages of the conversation : 
+{chat_history}
 
-Here you find the context to base your answer, this is the most important part.
-Context : {context}
-
-Question: {question}
-
-Answer: """
-
-prompt_inh = PromptTemplate(template=template_inh, input_variables=["question","context"])
-
-inh_kwargs = {"prompt": prompt_inh}
-
-template_div = """ You are playing the role of an expert legal assistant in the Italian Laws regulating Division of Assest after Divorce. You will be given the most relevant
-documents related to a question and you to provide a meaningful answer.  Always be sure to include article names and number you are basing your answer.
-Do not try to force an answer , just say you don't know if you are not sure.
-
-Here you find messages of the conversation:
-History : {chat_history}
-
-Here you find the context to base your answer, this is the most important part.
-Context : {context}
+You will be also provided with some context to base your answer. This is the part you should focus on when drafting your question.
+{context}
 
 Question: {question}
 
 Answer: """
 
-prompt_div = PromptTemplate(template=template_div, input_variables=["question","context"])
+prompt_inh = PromptTemplate(template=template_inh, input_variables=["question","context","chat_history"])
 
-div_kwargs = {"prompt": prompt_div}
+
+template_div = """ You are playing the role of an expert legal assistant in the Italian Laws regulating Division of Assests after Divorce.
+You will be given the most relevant documents related to a question and you have to examine these documents content and try to summarize an answer based on those.
+Do not try to force an answer , just say the question is too complicated for you to give an answer.
+
+You will be provided with previous messages of the conversation : 
+{chat_history}
+
+You will be also provided with some context to base your answer. This is the part you should focus on when drafting your question.
+{context}
+
+Question: {question}
+
+Answer: """
+
+prompt_div = PromptTemplate(template=template_div, input_variables=["question","context","chat_history"])
+
+memory_div = ConversationBufferWindowMemory(memory_key='chat_history', return_messages=True,input_key='question',output_key='answer',k=2)
+memory_inh = ConversationBufferWindowMemory(memory_key='chat_history', return_messages=True,input_key='question',output_key='answer',k=2)
 
 topic_chain  = LLMChain(llm=llm,prompt=topic_prompt)
+divorce_question_chain = LLMChain(llm = llm , prompt=prompt_div)
+inheritance_question_chain = LLMChain(llm = llm , prompt=prompt_inh)
 
-inheritance = RetrievalQA.from_chain_type(llm = llm,chain_type="stuff",retriever=inh_retriever,chain_type_kwargs=inh_kwargs,return_source_documents=True)
+from langchain.chains import ConversationalRetrievalChain
 
-divorce = RetrievalQA.from_chain_type(llm = llm ,chain_type="stuff",retriever=div_retriever,chain_type_kwargs=div_kwargs,return_source_documents=True)
+inheritance = ConversationalRetrievalChain.from_llm(
+    llm = llm,
+    chain_type='stuff',
+    memory = memory_inh,
+    retriever=inh_retriever,
+    condense_question_llm=llm,
+    return_source_documents=True,
+    verbose=True)
+
+divorce = ConversationalRetrievalChain.from_llm(
+    llm = llm,
+    chain_type='stuff',
+    memory = memory_div,
+    retriever=div_retriever,
+    condense_question_llm=llm,
+    return_source_documents=True,
+    verbose = True)
 
 out_examples = [
   {
@@ -185,19 +204,21 @@ def run_chain(input,topics):
    topic = topic_chain({"question":input,"topics":topics})
    relevant = ""
    if "divorce" in topic["text"]:
-        response =  divorce({"query":input})
+        response =  divorce({"question":input})
         relevant = extract_source_documents(response)
    elif "inheritance" in topic["text"]:
-        response = inheritance({"query":input})
+        response = inheritance({"question":input})
         relevant = extract_source_documents(response)
    else:
         response = outofscope({"question":input})
         return response["text"]
    
-   suffix = "Read the following laws to have a better understanding:"
+   suffix = """
+   Read the following laws to have a better understanding:
+   """
    for rel in relevant:
-       suffix = suffix + " " + rel + ","
-   return response["result"] + suffix + relevant[0]
+       suffix = suffix + " ," + rel 
+   return response["answer"] + suffix 
 
 
 def get_topic(input,topics):
@@ -206,8 +227,9 @@ def get_topic(input,topics):
 def extract_source_documents(response : dict):
     source_documents = [elem.page_content for elem in response["source_documents"]]
     relevant_documents =[" ".join(elem.split()[:3]) for elem in source_documents]
-    relevant_documents = list(dict.fromkeys(relevant_documents))
-    return relevant_documents
+    finals = list(dict.fromkeys(relevant_documents))
+    print(finals)
+    return finals
 
 def extract_text(response):
     return response["text"]
